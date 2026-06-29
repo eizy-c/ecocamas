@@ -29,14 +29,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Tablero de Producción y Donativos (Dashboard & Simulator)
     // ==========================================================================
     const DURATION = 1000; // ms de animación
-    const metaLiteras = 300;
+    const metaLiteras = 100;
     
-    // Estado inicial simulado
+    // Estado inicial (comienza en 0 y se actualiza al cargar el Google Sheet o usar fallbacks)
     let state = {
-        totalRecaudado: 15600,
-        literasFinanciadas: 65,
-        literasProduccion: 45,
-        literasEntregadas: 30
+        totalRecaudado: 0,
+        literasFinanciadas: 0,
+        literasProduccion: 0,
+        literasEntregadas: 0
     };
     
     // Almacena los valores anteriores para animación
@@ -74,6 +74,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Actualiza la UI del Dashboard
     function updateDashboard() {
+        // Calcular automáticamente las literas financiadas a partir del total recaudado (costo estimado por litera: $150 USD)
+        state.literasFinanciadas = Math.floor(state.totalRecaudado / 150);
+
         // Animar Donaciones
         animateCounter('valDonaciones', previousState.totalRecaudado, state.totalRecaudado, true);
         // Animar Financiadas
@@ -98,21 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
         previousState = { ...state };
     }
 
-    // Inicializar el Dashboard con animaciones
-    animateCounter('valDonaciones', 0, state.totalRecaudado, true);
-    animateCounter('valFinanciadas', 0, state.literasFinanciadas, false);
-    animateCounter('valProduccion', 0, state.literasProduccion, false);
-    animateCounter('valEntregadas', 0, state.literasEntregadas, false);
-    setTimeout(() => {
-        const totalFabricadas = state.literasProduccion + state.literasEntregadas;
-        const progressPercentage = Math.min((totalFabricadas / metaLiteras) * 100, 100).toFixed(1);
-        const progressBar = document.getElementById('progressBar');
-        const progressText = document.getElementById('progressPercentage');
-        const progressCurrentText = document.getElementById('progressCurrent');
-        if (progressBar) progressBar.style.width = `${progressPercentage}%`;
-        if (progressText) progressText.textContent = `${progressPercentage}%`;
-        if (progressCurrentText) progressCurrentText.textContent = `${totalFabricadas} Literas fabricadas`;
-    }, 100);
+    // El Dashboard se inicializará y animará automáticamente en cuanto finalice el fetch de Google Sheets o carguen los fallbacks.
 
     // Controles del simulador
     const simDonar25 = document.getElementById('simDonar25');
@@ -160,23 +149,108 @@ document.addEventListener('DOMContentLoaded', () => {
     if (simReset) {
         simReset.addEventListener('click', () => {
             state = {
+                totalRecaudado: 0,
+                literasFinanciadas: 0,
+                literasProduccion: 0,
+                literasEntregadas: 0
+            };
+            fetchGoogleSheetData();
+        });
+    }
+
+
+    // ==========================================================================
+    // Integración de Google Sheets (Base de Datos via JSONP para evitar CORS)
+    // ==========================================================================
+    const SPREADSHEET_ID = '1s7mhuWQs1XWsVrhaUg0j0nT5Ib7Zky4hoGRCnX0i4Oo'; 
+    
+    // Callback global de JSONP que ejecutará Google Sheets
+    window.handleGoogleSheetResponse = function(data) {
+        if (data.table && data.table.rows) {
+            let sheetData = {};
+            
+            // Formato Horizontal: Las columnas (cols) son las claves, la primera fila (rows[0]) tiene los valores
+            const cols = data.table.cols;
+            const firstRow = data.table.rows[0];
+            
+            if (cols && cols.length > 0 && firstRow && firstRow.c) {
+                cols.forEach((col, index) => {
+                    const cell = firstRow.c[index];
+                    if (cell && cell.v !== null) {
+                        const key = col.label ? String(col.label).trim().toLowerCase() : '';
+                        if (key) {
+                            sheetData[key] = parseFloat(cell.v);
+                        }
+                    }
+                });
+            }
+            
+            // Formato Vertical (Fallback)
+            if (Object.keys(sheetData).length === 0) {
+                data.table.rows.forEach(row => {
+                    if (row.c && row.c[0]) {
+                        const key = row.c[0].v ? String(row.c[0].v).trim().toLowerCase() : '';
+                        const value = (row.c[1] && row.c[1].v !== null) ? parseFloat(row.c[1].v) : 0;
+                        if (key) {
+                            sheetData[key] = value;
+                        }
+                    }
+                });
+            }
+            
+            // Mapear al estado
+            if (sheetData['recaudado'] !== undefined) state.totalRecaudado = sheetData['recaudado'];
+            if (sheetData['en_taller'] !== undefined) state.literasProduccion = Math.floor(sheetData['en_taller']);
+            if (sheetData['entregadas'] !== undefined) state.literasEntregadas = Math.floor(sheetData['entregadas']);
+            
+            updateDashboard();
+            console.log("Datos de Google Sheets (JSONP) actualizados:", sheetData);
+        }
+    };
+
+    function fetchGoogleSheetData() {
+        if (!SPREADSHEET_ID || SPREADSHEET_ID === 'YOUR_SPREADSHEET_ID_HERE') {
+            console.log("Usando datos locales por defecto. Configura el SPREADSHEET_ID.");
+            state = {
                 totalRecaudado: 15600,
                 literasFinanciadas: 65,
                 literasProduccion: 45,
                 literasEntregadas: 30
             };
             updateDashboard();
-        });
+            return;
+        }
+        
+        // Remover script anterior si existe para evitar acumulación
+        const oldScript = document.getElementById('gsheet-jsonp');
+        if (oldScript) oldScript.remove();
+        
+        // Crear elemento script dinámico (JSONP para evitar cualquier restricción de CORS)
+        const script = document.createElement('script');
+        script.id = 'gsheet-jsonp';
+        script.src = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=responseHandler:handleGoogleSheetResponse`;
+        
+        script.onerror = () => {
+            console.error("Error al cargar JSONP de Google Sheets. Cargando datos de fallback.");
+            state = {
+                totalRecaudado: 15600,
+                literasFinanciadas: 65,
+                literasProduccion: 45,
+                literasEntregadas: 30
+            };
+            updateDashboard();
+        };
+        
+        document.head.appendChild(script);
     }
 
+    // Cargar datos de Google Sheets al iniciar
+    fetchGoogleSheetData();
 
     // ==========================================================================
-    // Selector de Donaciones & Animación de la Litera SVG (Sección Donar)
+    // Interactividad de Tarjetas de WhatsApp y Animación del SVG Litera
     // ==========================================================================
-    const donarCards = document.querySelectorAll('.donar-card');
-    const customAmountInput = document.getElementById('customAmount');
-    const impactDescription = document.getElementById('impactDescription');
-    const donationForm = document.getElementById('donationForm');
+    const whatsappCards = document.querySelectorAll('.whatsapp-card');
     
     // Partes del SVG Litera
     const bedFrame = document.getElementById('bed-frame');
@@ -193,28 +267,22 @@ document.addEventListener('DOMContentLoaded', () => {
         // Reiniciar todas las clases activas
         bedFrame.classList.remove('active');
         bedLadder.classList.remove('active');
-        bedMattressTop.classList.remove('active');
-        bedMattressBottom.classList.remove('active');
+        if (bedMattressTop) bedMattressTop.classList.remove('active');
+        if (bedMattressBottom) bedMattressBottom.classList.remove('active');
         if (kidTop) kidTop.style.opacity = '0.1';
         if (kidBottom) kidBottom.style.opacity = '0.1';
         
-        let descText = "";
-        
         if (amount < 25) {
-            descText = `Con $${amount} USD compras consumibles básicos como electrodos de soldar y pintura base anticorrosiva.`;
             bedFrame.classList.add('active');
         } else if (amount >= 25 && amount < 60) {
-            descText = `Con $${amount} USD aseguras el metal tubular y tornillería básica de anclaje para la estructura de la litera.`;
             bedFrame.classList.add('active');
             bedLadder.classList.add('active');
         } else if (amount >= 60 && amount < 120) {
-            descText = `Con $${amount} USD adquieres un colchón antialérgico especial, cómodo y resistente a la humedad.`;
             bedFrame.classList.add('active');
             bedLadder.classList.add('active');
             if (bedMattressTop) bedMattressTop.classList.add('active');
             if (kidTop) kidTop.style.opacity = '1';
         } else if (amount >= 120 && amount < 240) {
-            descText = `Con $${amount} USD cubres el total de perfiles de acero estructurados y pagas al soldador local de ECOTECHNE, C.A. para armar la estructura.`;
             bedFrame.classList.add('active');
             bedLadder.classList.add('active');
             if (bedMattressTop) bedMattressTop.classList.add('active');
@@ -222,7 +290,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (kidTop) kidTop.style.opacity = '1';
         } else {
             // $240 o superior
-            descText = `¡Increíble! Con $${amount} USD financias la litera metálica doble completa con sus dos colchones. ¡Cambias el descanso de 2 personas para siempre!`;
             bedFrame.classList.add('active');
             bedLadder.classList.add('active');
             if (bedMattressTop) bedMattressTop.classList.add('active');
@@ -230,75 +297,65 @@ document.addEventListener('DOMContentLoaded', () => {
             if (kidTop) kidTop.style.opacity = '1';
             if (kidBottom) kidBottom.style.opacity = '1';
         }
-        
-        if (impactDescription) impactDescription.textContent = descText;
     }
 
-    // Event Listener para tarjetas de donación
-    donarCards.forEach(card => {
-        card.addEventListener('click', () => {
-            donarCards.forEach(c => c.classList.remove('active'));
-            card.classList.add('active');
-            
+    // Event Listeners para pasar el ratón (hover) sobre las tarjetas de WhatsApp y animar el SVG
+    whatsappCards.forEach(card => {
+        card.addEventListener('mouseenter', () => {
             const amount = parseInt(card.getAttribute('data-amount'), 10);
-            if (customAmountInput) customAmountInput.value = amount;
-            
             updateDonationImpact(amount);
+        });
+        
+        card.addEventListener('mouseleave', () => {
+            // Volver al estado por defecto (25) al quitar el cursor
+            updateDonationImpact(25);
         });
     });
 
-    // Event Listener para input numérico
-    if (customAmountInput) {
-        customAmountInput.addEventListener('input', (e) => {
-            let amount = parseInt(e.target.value, 10);
-            if (isNaN(amount) || amount < 0) amount = 0;
-            
-            donarCards.forEach(card => {
-                const cardAmount = parseInt(card.getAttribute('data-amount'), 10);
-                if (cardAmount === amount) {
-                    card.classList.add('active');
-                } else {
-                    card.classList.remove('active');
-                }
-            });
-            
-            updateDonationImpact(amount);
-        });
-    }
-
-    // Conectar el formulario de donaciones real con el Tablero
-    if (donationForm) {
-        donationForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            const amount = parseInt(customAmountInput.value, 10) || 0;
-            if (amount >= 5) {
-                // Actualizar estado general
-                state.totalRecaudado += amount;
-                
-                // Calcular literas financiadas y en taller basadas en el aporte de forma demostrativa
-                if (amount >= 240) {
-                    const count = Math.floor(amount / 240);
-                    state.literasFinanciadas += count;
-                    state.literasProduccion += count;
-                } else if (amount >= 120) {
-                    state.literasProduccion += 1;
-                }
-                
-                updateDashboard();
-                
-                alert(`¡Gracias por tu aporte simulado de $${amount} USD! Hemos sumado tu donativo al Tablero de Monitoreo en Vivo.`);
-                
-                // Desplazarse de forma fluida hacia el Tablero para ver los resultados
-                const tableroSection = document.getElementById('tablero');
-                if (tableroSection) {
-                    tableroSection.scrollIntoView({ behavior: 'smooth' });
-                }
-            }
-        });
-    }
-
     // Inicializar estado del impacto al cargar la página
     updateDonationImpact(25);
+
+    // ==========================================================================
+    // Filtros de Galería
+    // ==========================================================================
+    const filterBtns = document.querySelectorAll('.filter-btn');
+    const galleryItems = document.querySelectorAll('.gallery-item');
+    
+    if (filterBtns.length > 0 && galleryItems.length > 0) {
+        filterBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Cambiar botón activo
+                filterBtns.forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                
+                const filter = btn.getAttribute('data-filter');
+                
+                galleryItems.forEach(item => {
+                    const category = item.getAttribute('data-category');
+                    if (filter === 'all' || category === filter) {
+                        item.style.display = 'block';
+                        setTimeout(() => {
+                            item.style.opacity = '1';
+                            item.style.transform = 'scale(1)';
+                        }, 50);
+                    } else {
+                        item.style.opacity = '0';
+                        item.style.transform = 'scale(0.95)';
+                        setTimeout(() => {
+                            item.style.display = 'none';
+                        }, 300);
+                    }
+                });
+            });
+        });
+        
+        // Inicializar opacidad y escala de los items de la galería
+        galleryItems.forEach(item => {
+            item.style.transition = 'opacity 0.3s ease, transform 0.3s ease';
+            item.style.opacity = '1';
+            item.style.transform = 'scale(1)';
+        });
+    }
 
     // ==========================================================================
     // Acordeón FAQ
